@@ -1,8 +1,8 @@
 package com.test.dispatcher.dto;
 
-public record AgentResponse(String output, boolean success, String error) {
+public record AgentResponse(Object output, boolean success, String error) {
 
-    public static AgentResponse ok(String output) {
+    public static AgentResponse ok(Object output) {
         return new AgentResponse(output, true, null);
     }
 
