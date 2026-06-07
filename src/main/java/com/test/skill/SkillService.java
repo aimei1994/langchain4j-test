@@ -21,15 +21,18 @@ public class SkillService {
 
     private final ChatModel chatModel;
     private final String skillsClasspath;
+    private final FileSystemTools fileSystemTools;
 
     private Skills skills;
     private List<Skill> loadedSkills;
     private SkillAiService aiService;
 
     public SkillService(ChatModel chatModel,
-                        @Value("${agent.skills.classpath}") String skillsClasspath) {
+                        @Value("${agent.skills.classpath}") String skillsClasspath,
+                        FileSystemTools fileSystemTools) {
         this.chatModel       = chatModel;
         this.skillsClasspath = skillsClasspath;
+        this.fileSystemTools = fileSystemTools;
     }
 
     @PostConstruct
@@ -51,17 +54,18 @@ public class SkillService {
         // Wrap into Skills — provides toolProvider + formatAvailableSkills()
         skills = Skills.from(loadedSkills);
 
-        // Build AiService wired with Skills tool provider
-        // The system message lists available skills in XML so the LLM knows
-        // it can call activate_skill("name") to load instructions
+        // Build AiService wired with Skills tool provider + filesystem tools
         aiService = AiServices.builder(SkillAiService.class)
                 .chatModel(chatModel)
                 .toolProvider(skills.toolProvider())
+                .tools(fileSystemTools)
                 .systemMessageProvider(memoryId ->
                         "You have access to the following skills:\n" +
                                 skills.formatAvailableSkills() +
                                 "\nWhen the user's request relates to one of these skills, " +
-                                "activate it first using the `activate_skill` tool before proceeding."
+                                "activate it first using the `activate_skill` tool before proceeding.\n" +
+                                "You also have filesystem tools: readFile, listFiles, grepInDirectory, checkDirectory. " +
+                                "Use these to read project files when a skill requires file access."
                 )
                 .build();
 
