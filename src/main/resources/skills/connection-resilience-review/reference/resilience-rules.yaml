@@ -1,0 +1,210 @@
+code-review-rules:
+  - ruleName: http-no-retry
+    severity: critical
+    pass: 1
+    detect: |
+      Connection setup keywords — split on | and grep each one individually:
+        Java/Kotlin: new RestTemplate( | RestTemplate(new | WebClient.builder() | HttpClient.newBuilder() | new OkHttpClient( | OkHttpClient.Builder() | HttpClients.custom() | HttpClients.createDefault() | new HttpComponentsClientHttpRequestFactory( | OpenAiChatModel.builder() | Feign.builder() | @FeignClient
+        Python: requests.Session() | httpx.Client( | httpx.AsyncClient( | aiohttp.ClientSession(
+        TypeScript/JS: axios.create( | new http.Agent( | new https.Agent( | got.extend(
+        Go: &http.Client{ | http.Transport{
+        C#: new HttpClient( | IHttpClientFactory
+        Rust: reqwest::Client::new( | reqwest::ClientBuilder::new( | hyper::Client::new(
+      Retry guard keywords (ANY in class body → sourceHandled=true, skip finding):
+        RetryTemplate, @Retryable, maxAttempts, resilience4j, CircuitBreaker,
+        retryWhen(, retryIf(, .retry(, connectTimeout, readTimeout, socketTimeout,
+        timeout(, maxRetries, ExponentialBackoff, backoff::retry, WaitAndRetry, AddTransientHttpErrorPolicy
+    fix: |
+      Java: HttpComponentsClientHttpRequestFactory.setConnectTimeout(3000) + @Retryable(maxAttempts=3, retryFor={SocketTimeoutException.class,IOException.class}) + @Recover
+      Python: session.mount("https://", HTTPAdapter(max_retries=Retry(total=3, backoff_factor=1, status_forcelist=[500,502,503])))
+      TypeScript: axios.create({timeout:5000}) + axiosRetry(client, {retries:3, retryDelay:axiosRetry.exponentialDelay})
+      Go: &http.Client{Timeout:30*time.Second} + retry loop (max 3, time.Sleep(attempt*time.Second))
+      C#: AddHttpClient().AddTransientHttpErrorPolicy(p=>p.WaitAndRetryAsync(3, attempt=>TimeSpan.FromSeconds(Math.Pow(2,attempt))))
+      Rust: ClientBuilder::new().timeout(Duration::from_secs(30)).connect_timeout(Duration::from_secs(5)) + backoff::retry(ExponentialBackoff::default())
+
+  - ruleName: db-no-reconnect
+    severity: critical
+    pass: 1
+    detect: |
+      Connection setup keywords — split on | and grep each one individually:
+        Java/Kotlin: new HikariDataSource( | HikariConfig | DriverManager.getConnection( | DataSourceBuilder.create() | new BasicDataSource( | new ComboPooledDataSource(
+        Python: psycopg2.connect( | mysql.connector.connect( | create_engine( | sqlite3.connect(
+        TypeScript/JS: new Pool( | mysql.createConnection( | mongoose.connect( | new Sequelize(
+        Go: sql.Open(
+        C#: new SqlConnection( | new NpgsqlConnection( | UseSqlServer( | UseNpgsql(
+        Rust: PgPool::connect( | MySqlPool::connect( | SqlitePool::connect( | r2d2::Pool::builder(
+      Reconnect guard keywords (ANY in class body → sourceHandled=true, skip finding):
+        connectionTimeout, maxLifetime, connectionTestQuery, keepaliveTime,
+        initializationFailTimeout, @Retryable, RetryTemplate, TransientDataAccessException,
+        pool_pre_ping, pool_recycle, EnableRetryOnFailure, SetConnMaxLifetime, acquire_timeout
+    fix: |
+      Java: HikariConfig.setConnectionTimeout(30_000) + setMaxLifetime(1_800_000) + setKeepaliveTime(60_000) + setConnectionTestQuery("SELECT 1")
+      Python: create_engine(url, pool_pre_ping=True, pool_recycle=1800, connect_args={"connect_timeout":10})
+      TypeScript: new Pool({connectionTimeoutMillis:5000, idleTimeoutMillis:30000, max:10})
+      Go: db.SetConnMaxLifetime(30*time.Minute) + SetMaxOpenConns(10) + ping retry loop (max 3)
+      C#: sqlOptions.EnableRetryOnFailure(maxRetryCount:3, maxRetryDelay:TimeSpan.FromSeconds(5)) + CommandTimeout(30)
+      Rust: PgPoolOptions::new().acquire_timeout(Duration::from_secs(5)).max_lifetime(Duration::from_secs(1800))
+
+  - ruleName: redis-no-reconnect
+    severity: major
+    pass: 1
+    detect: |
+      Connection setup keywords — split on | and grep each one individually:
+        Java/Kotlin: new LettuceConnectionFactory( | new JedisConnectionFactory( | RedisClient.create( | new JedisPool( | new JedisCluster( | new Jedis(
+        Python: redis.Redis( | redis.StrictRedis( | aioredis.create_connection( | aioredis.create_redis(
+        TypeScript/JS: redis.createClient( | new Redis( | new IORedis(
+        Go: redis.NewClient( | redis.NewClusterClient(
+        C#: ConnectionMultiplexer.Connect( | ConnectionMultiplexer.ConnectAsync(
+        Rust: redis::Client::open( | redis::aio::ConnectionManager::new( | bb8_redis | r2d2_redis
+      Reconnect guard keywords (ANY in class body → sourceHandled=true, skip finding):
+        autoReconnect, reconnectDelay, reconnectBackoff, SocketOptions, ClientOptions,
+        retryAttempts, retryInterval, commandTimeout, connectTimeout, topologyRefreshOptions,
+        ReconnectRetryPolicy, retryStrategy, ConnectionManager, MaxRetries
+    fix: |
+      Java: ClientOptions.builder().autoReconnect(true).socketOptions(SocketOptions.builder().connectTimeout(Duration.ofSeconds(2)).build()) + commandTimeout(Duration.ofSeconds(5))
+      Python: redis.Redis(host, port, socket_timeout=5, socket_connect_timeout=2, retry_on_timeout=True, retry=Retry(ExponentialBackoff(), 3))
+      TypeScript: new Redis({retryStrategy:(times)=>Math.min(times*500,2000), connectTimeout:3000, commandTimeout:5000})
+      Go: redis.NewClient(&redis.Options{DialTimeout:5*time.Second, MaxRetries:3, MinRetryBackoff:100*time.Millisecond})
+      C#: options.ReconnectRetryPolicy=new ExponentialRetry(5000); options.AbortOnConnectFail=false; options.ConnectTimeout=5000
+      Rust: redis::aio::ConnectionManager::new(client).await? // auto-reconnects on failure
+
+  - ruleName: ftp-no-reconnect
+    severity: critical
+    pass: 1
+    detect: |
+      Connection setup keywords — split on | and grep each one individually:
+        Java: new FTPClient() | ftpClient.connect( | new FTPSClient() | new SFTPClient( | new JSch() | jsch.getSession(
+        Python: ftplib.FTP( | ftplib.FTP_TLS( | paramiko.SSHClient( | paramiko.SFTPClient
+        TypeScript/JS: ftp.connect( | new FTPClient( | sftp.connect(
+        Go: ftp.Dial( | sftp.NewClient(
+        C#: new FtpClient( | new AsyncFtpClient(
+        Rust: FtpStream::connect( | suppaftp::FtpStream | async_ftp::FtpStream
+      Reconnect guard keywords (ANY in class body → sourceHandled=true, skip finding):
+        retry, reconnect, maxAttempts, connectTimeout, dataTimeout,
+        defaultTimeout, soTimeout, setDefaultTimeout, RetryAttempts, DialWithTimeout
+    fix: |
+      Java: ftpClient.setDefaultTimeout(5_000) + setConnectTimeout(5_000) + setDataTimeout(Duration.ofSeconds(10)) + retry loop (max 3, Thread.sleep(1000L*attempt))
+      Python: ftp = ftplib.FTP(); ftp.connect(host, port, timeout=5) + retry loop (max 3, time.sleep(attempt))
+      TypeScript: sftp.connect({host, port, readyTimeout:5000}) + retry loop (max 3, await sleep(attempt*1000))
+      Go: ftp.Dial(addr, ftp.DialWithTimeout(5*time.Second)) + retry loop (max 3)
+      C#: client.Config.ConnectTimeout=5000; client.Config.RetryAttempts=3; await client.AutoConnectAsync()
+      Rust: FtpStream::connect(addr) in retry loop match (max 3, thread::sleep(Duration::from_secs(attempt)))
+
+  - ruleName: http-retry-untested
+    severity: critical
+    pass: 2
+    detect: |
+      Fire when test file references HTTP-client component but contains NONE of:
+        Java: SocketTimeoutException, ConnectException, IOException, thenThrow, doThrow, times(, verify(, assertThrows
+        Python: side_effect, ConnectionError, Timeout, call_count, assert_called
+        TypeScript: mockRejectedValue, mockRejectedValueOnce, toHaveBeenCalledTimes, rejects
+        Go: callCount, assert.Equal, DeadlineExceeded, errors.Is
+        C#: ThrowsAsync, HttpRequestException, Times.Exactly, SetupSequence
+        Rust: assert_eq!, is_err(), TimedOut, ConnectionRefused, times(
+    fix: |
+      Add two test cases: (1) first call throws timeout/connection error, second call succeeds — assert called twice;
+      (2) all calls throw — assert final error propagates. Use mock/spy on the HTTP client or transport layer.
+      Java: when(mock).thenThrow(new SocketTimeoutException()).thenReturn(success) → verify(mock,times(2)) + assertThrows
+      Python: mock.side_effect=[ConnectionError(),mock_response] → assert mock.call_count==2 + pytest.raises for exhausted
+      TypeScript: jest.fn().mockRejectedValueOnce(err).mockResolvedValueOnce(ok) → expect called 2 times + expect rejects
+      Go: callCount++ in DoFunc → assert.Equal(t,2,callCount) + assert.ErrorIs for exhausted
+      C#: SetupSequence().ThrowsAsync(HttpRequestException).ReturnsAsync(OK) → Times.Exactly(2) + Assert.ThrowsAsync
+      Rust: AtomicU32 counter in mock fn → assert_eq!(count,2) + assert!(result.is_err()) for exhausted
+
+  - ruleName: db-reconnect-untested
+    severity: critical
+    pass: 2
+    detect: |
+      Fire when test file references DB-connected component but contains NONE of:
+        Java: TransientDataAccessException, DataAccessException, CannotAcquireLockException, thenThrow, doThrow, times(, verify(
+        Python: side_effect, OperationalError, InterfaceError, call_count, assert_called
+        TypeScript: mockRejectedValue, Error, toHaveBeenCalledTimes
+        Go: callCount, driver.ErrBadConn, sql.ErrConnDone, assert.Equal
+        C#: ThrowsAsync, SqlException, Times.Exactly, SetupSequence
+        Rust: assert_eq!, is_err(), PoolTimedOut
+    fix: |
+      Add two test cases: (1) first getConnection/acquire throws transient error, second succeeds — assert called twice;
+      (2) all attempts throw — assert final error propagates.
+      Java: when(dataSource.getConnection()).thenThrow(new CannotAcquireLockException()).thenReturn(conn) → verify(times(2)) + assertThrows(DataAccessException)
+      Python: mock.side_effect=[OperationalError(),mock_conn] → assert mock.call_count==2 + pytest.raises for exhausted
+      Go: callCount++ in mock OpenFunc → assert.Equal(t,2,callCount) + assert driver.ErrBadConn propagates
+      C#: SetupSequence().ThrowsAsync(CreateSqlException()).ReturnsAsync(1) → Times.Exactly(2)
+      Rust: AtomicU32 counter → assert_eq!(count,2) + assert!(matches!(err,sqlx::Error::PoolTimedOut))
+
+  - ruleName: redis-reconnect-untested
+    severity: major
+    pass: 2
+    detect: |
+      Fire when test file references Redis-connected component but contains NONE of:
+        Java: RedisConnectionFailureException, JedisConnectionException, thenThrow, doThrow, times(, verify(
+        Python: side_effect, ConnectionError, RedisError, call_count, assert_called
+        TypeScript: mockRejectedValue, Error, toHaveBeenCalledTimes
+        Go: callCount, redis.ErrClosed, assert.Equal
+        C#: ThrowsAsync, RedisConnectionException, Times.Exactly
+        Rust: assert_eq!, is_err(), RedisError, ConnectionRefused
+    fix: |
+      Add test: first connection attempt throws Redis connection error, retry succeeds — assert called twice.
+      Java: when(connectionFactory.getConnection()).thenThrow(new RedisConnectionFailureException()).thenReturn(conn) → verify(times(2))
+      Python: mock.side_effect=[ConnectionError(),mock_conn] → assert mock.call_count==2
+      Go: callCount++ in mock GetFunc → return redis.ErrClosed on first call, assert.Equal(t,2,callCount)
+      C#: SetupSequence().ThrowsAsync(new RedisConnectionException(...)).ReturnsAsync(value) → Times.Exactly(2)
+      Rust: AtomicU32 counter → assert_eq!(count,2) + assert!(result.is_ok())
+
+  - ruleName: ftp-reconnect-untested
+    severity: critical
+    pass: 2
+    detect: |
+      Fire when test file references FTP-connected component but contains NONE of:
+        Java: IOException, SocketException, FTPConnectionClosedException, thenThrow, doThrow, times(, verify(
+        Python: side_effect, error_reply, socket.error, call_count, assert_called
+        TypeScript: mockRejectedValue, Error, toHaveBeenCalledTimes
+        Go: callCount, io.EOF, assert.Equal
+        C#: ThrowsAsync, FtpException, Times.Exactly
+        Rust: assert_eq!, is_err(), FtpError, ConnectionRefused
+    fix: |
+      Add two test cases: (1) connect() throws IOException/connection error, retry succeeds — assert connect called twice;
+      (2) all connect() calls throw — assert error propagates.
+      Java: doThrow(new IOException()).doNothing().when(ftpClient).connect(any(),anyInt()) → verify(ftpClient,times(2))
+      Python: mock.connect.side_effect=[ftplib.error_temp(),None] → assert mock.connect.call_count==2
+      Go: callCount++ in ftpDial mock → return error on first, assert.Equal(t,2,callCount)
+      C#: SetupSequence().ThrowsAsync(new FtpException()).Returns(Task.CompletedTask) → Times.Exactly(2)
+      Rust: with_retry(3, ||{if count==0{Err(FtpError::...)}else{Ok(())}}) → assert!(result.is_ok()) + assert_eq!(count,2)
+
+  - ruleName: no-test-file
+    severity: critical
+    pass: 2
+    detect: |
+      Fire when a component matched by ANY pass:1 rule has NO test file referencing the component
+      class/struct/type name anywhere under testRoot.
+    fix: |
+      Create <ComponentName>Test with three scenarios: happy path, retry-then-succeed, all-retries-exhausted.
+      Adapt the stub below to the detected language and connection type.
+
+      Java stub:
+      @ExtendWith(MockitoExtension.class)
+      class <ComponentName>Test {
+          @Mock <DependencyType> mockDep;
+          @InjectMocks <ComponentName> component;
+
+          @Test void shouldConnectSuccessfully() {
+              assertDoesNotThrow(() -> component.connect());
+          }
+
+          @Test void shouldRetryOnceThenSucceed() throws Exception {
+              when(mockDep.connect(any())).thenThrow(new IOException("fail")).thenReturn(success);
+              component.connect();
+              verify(mockDep, times(2)).connect(any());
+          }
+
+          @Test void shouldThrowAfterAllRetriesExhausted() throws Exception {
+              when(mockDep.connect(any())).thenThrow(new IOException("fail"));
+              assertThrows(ServiceUnavailableException.class, () -> component.connect());
+              verify(mockDep, times(3)).connect(any());
+          }
+      }
+
+      Python: use pytest + unittest.mock. mock.connect.side_effect=[error, success]; assert call_count==2; pytest.raises for exhausted.
+      Go: inject mock via interface; callCount++ in mock; assert.Equal(t,2,callCount); assert error for exhausted.
+      TypeScript: jest.spyOn + mockRejectedValueOnce/mockResolvedValueOnce; expect.toHaveBeenCalledTimes(2); expect rejects for exhausted.
+      C#: Moq SetupSequence().ThrowsAsync().ReturnsAsync(); Times.Exactly(2); Assert.ThrowsAsync for exhausted.
+      Rust: AtomicU32 counter in mock fn; assert_eq!(count,2); assert!(result.is_err()) for exhausted.
