@@ -11,6 +11,7 @@ import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.function.Function;
@@ -93,6 +94,19 @@ public class SkillService {
 
         log.info("Invoking skill [{}] with args: [{}]", skillName, args);
         return aiServiceBySkill.get(skillName).chat(skill.content(), args);
+    }
+
+    // Runs each named skill against the same args, one at a time — each call
+    // gets only that one skill's own system message and scoped resource tool
+    // (see buildAiServiceFor). Skill bodies are never combined into a single
+    // call: N skills means N calls, so context size per call stays flat no
+    // matter how many skills are requested or how many exist in total.
+    public Map<String, String> invokeAll(List<String> skillNames, String args) {
+        Map<String, String> results = new LinkedHashMap<>();
+        for (String skillName : skillNames) {
+            results.put(skillName, invoke(skillName, args));
+        }
+        return results;
     }
 
     // Returns list of loaded skill names
