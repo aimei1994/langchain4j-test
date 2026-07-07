@@ -3,6 +3,7 @@ package com.test.controller;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import com.fasterxml.jackson.databind.node.TextNode;
 import com.test.dispatcher.AgentDispatcher;
 import com.test.dispatcher.dto.AgentRequest;
 import com.test.dispatcher.dto.AgentResponse;
@@ -15,6 +16,8 @@ import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
+
+import java.util.Map;
 
 @Controller
 @RequestMapping("/agent")
@@ -33,13 +36,29 @@ public class AgentController {
     public ResponseEntity<AgentResponse> invoke(
             @Valid @RequestBody AgentRequest request) {
         try {
-            String result = dispatcher.handle(request.input());
-            return ResponseEntity.ok(AgentResponse.ok(parseOrRaw(result)));
+            Object result = dispatcher.handle(request.input());
+            Object output = (result instanceof Map<?, ?> perSkillResults)
+                    ? combine(perSkillResults)
+                    : parseOrRaw((String) result);
+            return ResponseEntity.ok(AgentResponse.ok(output));
         } catch (Exception e) {
             log.error("Error invoking skill: {}", e.getMessage(), e);
             return ResponseEntity.internalServerError()
                     .body(AgentResponse.error(e.getMessage()));
         }
+    }
+
+    // Multi-skill dispatch (/skillA,skillB) — each skill's own raw output goes
+    // through the same parse/strip path as a single-skill call, then all
+    // results are combined into one object keyed by skill name.
+    private ObjectNode combine(Map<?, ?> perSkillResults) {
+        ObjectNode combined = objectMapper.createObjectNode();
+        perSkillResults.forEach((skillName, output) -> {
+            Object parsed = parseOrRaw(String.valueOf(output));
+            JsonNode node = (parsed instanceof JsonNode jsonNode) ? jsonNode : new TextNode(String.valueOf(parsed));
+            combined.set(String.valueOf(skillName), node);
+        });
+        return combined;
     }
 
     @GetMapping("/skills")
