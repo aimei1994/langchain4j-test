@@ -47,8 +47,8 @@ class MultiSkillDispatchTest {
     }
 
     @Test
-    void invokeAllRunsEachSkillInItsOwnIsolatedCall() {
-        Map<String, String> results = skillService.invokeAll(List.of("summarize", "weather"), "some input");
+    void invokeWithMultipleSkillNamesRunsEachInItsOwnIsolatedCall() {
+        Map<String, String> results = skillService.invoke(List.of("summarize", "weather"), "some input");
 
         assertThat(results).containsOnlyKeys("summarize", "weather");
 

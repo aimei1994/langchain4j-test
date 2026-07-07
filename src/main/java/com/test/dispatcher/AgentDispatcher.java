@@ -48,7 +48,7 @@ public class AgentDispatcher {
         }
 
         log.info("Dispatching {} with args [{}]", skillNames, args);
-        return skillService.invokeAll(skillNames, args);
+        return skillService.invoke(skillNames, args);
     }
 
     public String listAvailable() {
