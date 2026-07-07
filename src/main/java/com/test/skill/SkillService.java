@@ -117,4 +117,10 @@ public class SkillService {
                 .sorted()
                 .toList();
     }
+
+    // Used by AgentDispatcher to validate /mentions found in free text against
+    // real skills, so only a name that actually exists ever gets dispatched.
+    public boolean hasSkill(String skillName) {
+        return skillsByName.containsKey(skillName);
+    }
 }

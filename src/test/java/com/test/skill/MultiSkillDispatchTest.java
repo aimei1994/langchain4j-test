@@ -79,4 +79,47 @@ class MultiSkillDispatchTest {
         assertThat(result).isInstanceOf(String.class);
         assertThat((String) result).contains(SUMMARIZE_MARKER);
     }
+
+    @Test
+    void dispatcherParsesSkillMentionsFromFreeTextWithColonPayload() {
+        Object result = dispatcher.handle(
+                "make sure to use /summarize and /weather to review following code: the-actual-code-here();");
+
+        assertThat(result).isInstanceOf(Map.class);
+        @SuppressWarnings("unchecked")
+        Map<String, String> results = (Map<String, String>) result;
+
+        assertThat(results).containsOnlyKeys("summarize", "weather");
+        assertThat(results.get("summarize")).contains(SUMMARIZE_MARKER);
+        assertThat(results.get("weather")).contains(WEATHER_MARKER);
+    }
+
+    @Test
+    void dispatcherParsesSkillMentionsFromFreeTextWithFencedCodeBlock() {
+        Object result = dispatcher.handle(
+                "please use /summarize and /weather on this:\n```\nthe-actual-code-here();\n```");
+
+        assertThat(result).isInstanceOf(Map.class);
+        @SuppressWarnings("unchecked")
+        Map<String, String> results = (Map<String, String>) result;
+
+        assertThat(results).containsOnlyKeys("summarize", "weather");
+    }
+
+    @Test
+    void dispatcherIgnoresUnknownSlashMentionsInFreeText() {
+        Object result = dispatcher.handle(
+                "run /summarize on the file at /home/user/example.txt: some content");
+
+        assertThat(result).isInstanceOf(String.class);
+        assertThat((String) result).contains(SUMMARIZE_MARKER);
+    }
+
+    @Test
+    void dispatcherReportsWhenNoKnownSkillMentioned() {
+        Object result = dispatcher.handle("please review this: some code");
+
+        assertThat(result).isInstanceOf(String.class);
+        assertThat((String) result).contains("No known /skillname mentioned");
+    }
 }
