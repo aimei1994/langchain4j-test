@@ -2,9 +2,7 @@ package com.test.skill;
 
 import dev.langchain4j.model.chat.ChatModel;
 import dev.langchain4j.skills.ClassPathSkillLoader;
-import dev.langchain4j.skills.FileSystemSkill;
 import dev.langchain4j.skills.Skill;
-import dev.langchain4j.skills.Skills;
 import dev.langchain4j.service.AiServices;
 import jakarta.annotation.PostConstruct;
 import org.slf4j.Logger;
@@ -13,6 +11,9 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
 import java.util.List;
+import java.util.Map;
+import java.util.function.Function;
+import java.util.stream.Collectors;
 
 @Service
 public class SkillService {
@@ -23,8 +24,8 @@ public class SkillService {
     private final String skillsClasspath;
     private final FileSystemTools fileSystemTools;
 
-    private Skills skills;
     private List<Skill> loadedSkills;
+    private Map<String, Skill> skillsByName;
     private SkillAiService aiService;
 
     public SkillService(ChatModel chatModel,
@@ -47,26 +48,20 @@ public class SkillService {
             );
         }
 
+        skillsByName = loadedSkills.stream()
+                .collect(Collectors.toMap(Skill::name, Function.identity()));
+
         loadedSkills.forEach(s ->
                 log.info("Loaded skill: [{}] — {}", s.name(), s.description())
         );
 
-        // Wrap into Skills — provides toolProvider + formatAvailableSkills()
-        skills = Skills.from(loadedSkills);
-
-        // Build AiService wired with Skills tool provider + filesystem tools
+        // No activate_skill tool here on purpose: which skill runs is decided in
+        // invoke() below from the /skillname the caller already gave us, not by
+        // letting the model pick a tool. That's what guarantees the right skill
+        // always runs instead of the model choosing to skip or misname it.
         aiService = AiServices.builder(SkillAiService.class)
                 .chatModel(chatModel)
-                .toolProvider(skills.toolProvider())
                 .tools(fileSystemTools)
-                .systemMessageProvider(memoryId ->
-                        "You have access to the following skills:\n" +
-                                skills.formatAvailableSkills() +
-                                "\nWhen the user's request relates to one of these skills, " +
-                                "activate it first using the `activate_skill` tool before proceeding.\n" +
-                                "You also have filesystem tools: readFile, listFiles, grepInDirectory, checkDirectory. " +
-                                "Use these to read project files when a skill requires file access."
-                )
                 .build();
 
         log.info("SkillService ready with {} skill(s): {}",
@@ -75,12 +70,16 @@ public class SkillService {
         );
     }
 
-    // Dispatches /skillname <args> — extracts skill name and routes to aiService
+    // Dispatches /skillname <args> — deterministically loads that skill's own
+    // instructions as the system message, instead of asking the model to pick.
     public String invoke(String skillName, String args) {
-        // The LLM will activate the right skill via activate_skill tool
-        String prompt = "Use the /" + skillName + " skill for: " + args;
+        Skill skill = skillsByName.get(skillName);
+        if (skill == null) {
+            return "Unknown skill: /" + skillName + ". Available: " + availableSkills();
+        }
+
         log.info("Invoking skill [{}] with args: [{}]", skillName, args);
-        return aiService.chat(prompt);
+        return aiService.chat(skill.content(), args);
     }
 
     // Returns list of loaded skill names
