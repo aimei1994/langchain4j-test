@@ -14,6 +14,10 @@ import org.springframework.stereotype.Service;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 import java.util.function.Function;
 import java.util.stream.Collectors;
 
@@ -97,17 +101,33 @@ public class SkillService {
     }
 
     // Overload of invoke() above for N skill names — runs each named skill
-    // against the same args, one at a time — each call gets only that one
-    // skill's own system message and scoped resource tool (see
-    // buildAiServiceFor). Skill bodies are never combined into a single
-    // call: N skills means N calls, so context size per call stays flat no
-    // matter how many skills are requested or how many exist in total.
+    // concurrently (one LLM round trip per skill, on its own virtual thread),
+    // each still getting only that one skill's own system message and scoped
+    // resource tool (see buildAiServiceFor). Skill bodies are never combined
+    // into a single call — N skills means N independent calls, just run in
+    // parallel instead of one after another so wall-clock time doesn't scale
+    // linearly with skill count. One skill failing doesn't fail the rest.
     public Map<String, String> invoke(List<String> skillNames, String args) {
-        Map<String, String> results = new LinkedHashMap<>();
-        for (String skillName : skillNames) {
-            results.put(skillName, invoke(skillName, args));
+        try (ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor()) {
+            Map<String, Future<String>> futures = new LinkedHashMap<>();
+            for (String skillName : skillNames) {
+                futures.put(skillName, executor.submit(() -> invoke(skillName, args)));
+            }
+
+            Map<String, String> results = new LinkedHashMap<>();
+            for (Map.Entry<String, Future<String>> entry : futures.entrySet()) {
+                try {
+                    results.put(entry.getKey(), entry.getValue().get());
+                } catch (ExecutionException e) {
+                    log.warn("Skill [{}] failed: {}", entry.getKey(), e.getCause() != null ? e.getCause().getMessage() : e.getMessage());
+                    results.put(entry.getKey(), "ERROR: " + (e.getCause() != null ? e.getCause().getMessage() : e.getMessage()));
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    results.put(entry.getKey(), "ERROR: interrupted");
+                }
+            }
+            return results;
         }
-        return results;
     }
 
     // Returns list of loaded skill names

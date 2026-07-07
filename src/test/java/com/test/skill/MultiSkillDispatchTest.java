@@ -9,6 +9,8 @@ import dev.langchain4j.model.chat.response.ChatResponse;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
+import java.time.Duration;
+import java.time.Instant;
 import java.util.List;
 import java.util.Map;
 
@@ -36,6 +38,47 @@ class MultiSkillDispatchTest {
             return ChatResponse.builder()
                     .aiMessage(AiMessage.from("ECHO: " + systemText))
                     .build();
+        }
+    }
+
+    // Sleeps a fixed duration per call, so tests can prove multiple skills
+    // run concurrently instead of one after another.
+    private static class SlowFakeChatModel implements ChatModel {
+        private final Duration delay;
+
+        SlowFakeChatModel(Duration delay) {
+            this.delay = delay;
+        }
+
+        @Override
+        public ChatResponse chat(ChatRequest request) {
+            try {
+                Thread.sleep(delay.toMillis());
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+            return ChatResponse.builder().aiMessage(AiMessage.from("done")).build();
+        }
+    }
+
+    // Fails for whichever skill's system message contains failingMarker, so
+    // tests can prove one skill's failure doesn't take down the others.
+    private static class PartiallyFailingFakeChatModel implements ChatModel {
+        private final String failingMarker;
+
+        PartiallyFailingFakeChatModel(String failingMarker) {
+            this.failingMarker = failingMarker;
+        }
+
+        @Override
+        public ChatResponse chat(ChatRequest request) {
+            String systemText = SystemMessage.findFirst(request.messages())
+                    .map(SystemMessage::text)
+                    .orElse("");
+            if (systemText.contains(failingMarker)) {
+                throw new RuntimeException("simulated failure");
+            }
+            return ChatResponse.builder().aiMessage(AiMessage.from("ok")).build();
         }
     }
 
@@ -121,5 +164,38 @@ class MultiSkillDispatchTest {
 
         assertThat(result).isInstanceOf(String.class);
         assertThat((String) result).contains("No known /skillname mentioned");
+    }
+
+    @Test
+    void invokeWithMultipleSkillNamesRunsThemConcurrentlyNotSequentially() {
+        Duration perCallDelay = Duration.ofMillis(300);
+        SkillService slowSkillService = new SkillService(
+                new SlowFakeChatModel(perCallDelay), "skills", new FileSystemTools());
+        slowSkillService.init();
+
+        List<String> threeSkills = List.of("summarize", "weather", "code-repo-review");
+
+        Instant start = Instant.now();
+        Map<String, String> results = slowSkillService.invoke(threeSkills, "some input");
+        Duration elapsed = Duration.between(start, Instant.now());
+
+        assertThat(results).containsOnlyKeys("summarize", "weather", "code-repo-review");
+        // Sequential would take >= 3 * 300ms = 900ms; concurrent should land
+        // close to a single call's delay. Generous margin to avoid CI flakiness.
+        assertThat(elapsed).isLessThan(Duration.ofMillis(800));
+    }
+
+    @Test
+    void invokeWithMultipleSkillNamesIsolatesOneSkillsFailure() {
+        SkillService partiallyFailingSkillService = new SkillService(
+                new PartiallyFailingFakeChatModel(WEATHER_MARKER), "skills", new FileSystemTools());
+        partiallyFailingSkillService.init();
+
+        Map<String, String> results = partiallyFailingSkillService.invoke(
+                List.of("summarize", "weather"), "some input");
+
+        assertThat(results).containsOnlyKeys("summarize", "weather");
+        assertThat(results.get("summarize")).isEqualTo("ok");
+        assertThat(results.get("weather")).contains("ERROR");
     }
 }
