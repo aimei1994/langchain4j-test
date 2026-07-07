@@ -3,6 +3,7 @@ package com.test.skill;
 import dev.langchain4j.model.chat.ChatModel;
 import dev.langchain4j.skills.ClassPathSkillLoader;
 import dev.langchain4j.skills.Skill;
+import dev.langchain4j.skills.SkillResource;
 import dev.langchain4j.service.AiServices;
 import jakarta.annotation.PostConstruct;
 import org.slf4j.Logger;
@@ -26,7 +27,7 @@ public class SkillService {
 
     private List<Skill> loadedSkills;
     private Map<String, Skill> skillsByName;
-    private SkillAiService aiService;
+    private Map<String, SkillAiService> aiServiceBySkill;
 
     public SkillService(ChatModel chatModel,
                         @Value("${agent.skills.classpath}") String skillsClasspath,
@@ -51,23 +52,35 @@ public class SkillService {
         skillsByName = loadedSkills.stream()
                 .collect(Collectors.toMap(Skill::name, Function.identity()));
 
-        loadedSkills.forEach(s ->
-                log.info("Loaded skill: [{}] — {}", s.name(), s.description())
-        );
-
         // No activate_skill tool here on purpose: which skill runs is decided in
         // invoke() below from the /skillname the caller already gave us, not by
-        // letting the model pick a tool. That's what guarantees the right skill
-        // always runs instead of the model choosing to skip or misname it.
-        aiService = AiServices.builder(SkillAiService.class)
-                .chatModel(chatModel)
-                .tools(fileSystemTools)
-                .build();
+        // letting the model pick a tool. Each skill gets its own AiService,
+        // scoped to only its own reference resources — that's what lets the
+        // model still fulfil steps like "Read reference/rule.md" without either
+        // eagerly inlining every skill's (sometimes large) reference material
+        // or leaking one skill's resources into another's tool set.
+        aiServiceBySkill = loadedSkills.stream()
+                .collect(Collectors.toMap(Skill::name, this::buildAiServiceFor));
+
+        loadedSkills.forEach(s ->
+                log.info("Loaded skill: [{}] — {} ({} resource(s))",
+                        s.name(), s.description(), s.resources().size())
+        );
 
         log.info("SkillService ready with {} skill(s): {}",
                 loadedSkills.size(),
                 loadedSkills.stream().map(Skill::name).toList()
         );
+    }
+
+    private SkillAiService buildAiServiceFor(Skill skill) {
+        Map<String, String> resourcesByPath = skill.resources().stream()
+                .collect(Collectors.toMap(SkillResource::relativePath, SkillResource::content));
+
+        return AiServices.builder(SkillAiService.class)
+                .chatModel(chatModel)
+                .tools(fileSystemTools, new SkillResourceTool(resourcesByPath))
+                .build();
     }
 
     // Dispatches /skillname <args> — deterministically loads that skill's own
@@ -79,7 +92,7 @@ public class SkillService {
         }
 
         log.info("Invoking skill [{}] with args: [{}]", skillName, args);
-        return aiService.chat(skill.content(), args);
+        return aiServiceBySkill.get(skillName).chat(skill.content(), args);
     }
 
     // Returns list of loaded skill names
