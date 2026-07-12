@@ -11,19 +11,22 @@ import org.springframework.stereotype.Component;
 
 import java.util.Set;
 
+// Same key-refresh behavior as RefreshableChatModel, but built with the
+// json_schema response format enabled so AiServices structured-output
+// return types (POJO / List<Pojo> / Result<...>) work against it.
+// Kept separate from the plain `chatModel` bean so free-text flows
+// (SkillService, non-structured subagents) are unaffected.
 @Component
-public class RefreshableChatModel implements ChatModel {
+public class StructuredOutputChatModel implements ChatModel {
 
-    private static final Logger log = LoggerFactory.getLogger(RefreshableChatModel.class);
+    private static final Logger log = LoggerFactory.getLogger(StructuredOutputChatModel.class);
 
     private final ApiKeyProvider keyProvider;
     private final AgentProperties properties;
 
-    // volatile: all threads always see the latest rebuilt model
     private volatile ChatModel delegate;
 
-    public RefreshableChatModel(ApiKeyProvider keyProvider,
-                                AgentProperties properties) {
+    public StructuredOutputChatModel(ApiKeyProvider keyProvider, AgentProperties properties) {
         this.keyProvider = keyProvider;
         this.properties  = properties;
     }
@@ -37,7 +40,6 @@ public class RefreshableChatModel implements ChatModel {
             if (is401(e)) {
                 log.warn("401 Unauthorized detected — refreshing key and retrying once");
                 rebuildDelegate();
-                // Retry exactly once with the refreshed key
                 return delegate.chat(request);
             }
             throw e;
@@ -52,7 +54,7 @@ public class RefreshableChatModel implements ChatModel {
     private synchronized void rebuildDelegate() {
         String freshKey = keyProvider.refresh();
         delegate = buildModel(freshKey);
-        log.info("ChatModel rebuilt with refreshed API key");
+        log.info("Structured-output ChatModel rebuilt with refreshed API key");
     }
 
     private ChatModel getDelegate() {
@@ -73,6 +75,10 @@ public class RefreshableChatModel implements ChatModel {
                 .modelName(properties.getModelName())
                 .temperature(properties.getTemperature())
                 .maxTokens(properties.getMaxTokens())
+                .responseFormat("json_schema")
+                .strictJsonSchema(true)
+                .logResponses(true)
+                .logRequests(true)
                 .build();
     }
 

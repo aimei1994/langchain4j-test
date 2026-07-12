@@ -44,23 +44,35 @@ Call `checkDirectory(inputPath)`. Run probes in order — first match wins. Reco
 
 You MUST run all four blocks below. Check each one completely before moving to the next.
 
-**3A — HTTP** (`http-no-retry` detect block):
-- Split detected language's keywords on `|`. Call `grepInDirectory(sourceRoot, sourceExt, keyword)` once per keyword.
-- For each matched file: `readFile`, extract class/struct name, check body for retry guard keywords.
-- No guard → `sourceHandled=false`, emit pass:1 finding. Guard present → `sourceHandled=true`.
+**Keyword extraction protocol** — apply to every sub-step before grepping:
 
-**3B — DB** (`db-no-reconnect` detect block):
-- Same process as 3A using DB setup keywords and reconnect guard keywords.
+1. In `resilience-rules.yaml`, find the entry whose `ruleName` matches the sub-step label.
+2. Its `detect` field contains two sections — parse them as follows:
 
-**3C — Redis** (`redis-no-reconnect` detect block):
-- Same process as 3A using Redis setup keywords and reconnect guard keywords.
+   **Setup keywords** (under `"Connection setup keywords — split on | and grep each one individually:"`):
+    - Find the line whose prefix matches the language from Step 2.
+      Prefix matching: `Java/Kotlin` covers both Java and Kotlin; `TypeScript/JS` covers TypeScript and JavaScript.
+    - Split the value after `:` on ` | ` → each token is one grep keyword.
 
-**3D — FTP** (`ftp-no-reconnect` detect block):
-- Same process as 3A using FTP setup keywords and reconnect guard keywords.
+   **Guard keywords** (under `"Retry guard keywords"` for HTTP, `"Reconnect guard keywords"` for DB/Redis/FTP):
+    - This section is a language-agnostic comma-separated flat list (may span multiple lines).
+    - Collect all tokens, split on `, ` → guard keyword set.
+
+**3A — HTTP** (ruleName: `http-no-retry`):
+
+- Apply extraction protocol → call `grepInDirectory(sourceRoot, sourceExt, keyword)` once per setup keyword.
+- For each matched file: `readFile`, extract class/struct name, scan entire class body for ANY guard keyword.
+- No guard found → `sourceHandled=false`, emit pass:1 finding. Guard found → `sourceHandled=true`.
+
+**3B — DB** (ruleName: `db-no-reconnect`): same process as 3A.
+
+**3C — Redis** (ruleName: `redis-no-reconnect`): same process as 3A.
+
+**3D — FTP** (ruleName: `ftp-no-reconnect`): same process as 3A.
 
 **Early exit:** if 3A + 3B + 3C + 3D all returned zero file matches → return `[]`.
 
-Add every matched component to the **components list**: `(componentName, ruleName, sourceFile, sourceHandled)`.
+Add every matched file to the **components list**: `(componentName, ruleName, sourceFile, sourceHandled)`.
 
 ---
 
@@ -69,28 +81,32 @@ Add every matched component to the **components list**: `(componentName, ruleNam
 Do not skip components. Process each one completely.
 
 1. `grepInDirectory(testRoot, sourceExt, componentName)` to locate test file.
-2. **No test file** → emit `no-test-file` finding: `existingCode = null`, `suggestionCode` = test stub from `no-test-file` `fix` block, lines numbered from 1.
-3. **Test file found** → `readFile(testFilePath)`. Scan for test retry keywords from the matching `pass: 2` rule's `detect` block.
+2. **No test file** → emit `no-test-file` finding: `existingCode = null`, `suggestionCode` = test stub from
+   `no-test-file` `fix` block, lines numbered from 1.
+3. **Test file found** → `readFile(testFilePath)`. Scan for test retry keywords from the matching `pass: 2` rule's
+   `detect` block.
 4. **Keywords present** → PASS. No finding.
 5. **No keywords** → emit pass:2 finding:
-   - `existingCode` = first test method body, `N: ` prefix format
-   - `suggestionCode` = that method unchanged + new retry/exhaustion test methods from `fix` block, line numbers continuing sequentially
+    - `existingCode` = first test method body, `N: ` prefix format
+    - `suggestionCode` = that method unchanged + new retry/exhaustion test methods from `fix` block, line numbers
+      continuing sequentially
 
 **Decision matrix:**
 
-| sourceHandled | Test coverage | Findings |
-|---|---|---|
-| false | no test file | pass:1 rule + `no-test-file` |
-| false | file exists, no retry | pass:1 rule + pass:2 rule |
-| true | no test file | `no-test-file` only |
-| true | file exists, no retry | pass:2 rule only |
-| true | file exists, retry covered | none |
+| sourceHandled | Test coverage              | Findings                     |
+|---------------|----------------------------|------------------------------|
+| false         | no test file               | pass:1 rule + `no-test-file` |
+| false         | file exists, no retry      | pass:1 rule + pass:2 rule    |
+| true          | no test file               | `no-test-file` only          |
+| true          | file exists, no retry      | pass:2 rule only             |
+| true          | file exists, retry covered | none                         |
 
 ---
 
 ## Step 4.5 — Self-check before output
 
 Confirm all of the following before proceeding to Step 5:
+
 - [ ] Ran HTTP greps (3A) — recorded result (matches or no matches)
 - [ ] Ran DB greps (3B) — recorded result
 - [ ] Ran Redis greps (3C) — recorded result

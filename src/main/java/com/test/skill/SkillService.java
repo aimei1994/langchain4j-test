@@ -90,4 +90,17 @@ public class SkillService {
                 .sorted()
                 .toList();
     }
+
+    // Returns the raw loaded Skill objects (used to build per-skill subagents)
+    public List<Skill> loadedSkills() {
+        return loadedSkills;
+    }
+
+    // Looks up a single loaded skill by name
+    public Skill findSkill(String name) {
+        return loadedSkills.stream()
+                .filter(s -> s.name().equals(name))
+                .findFirst()
+                .orElseThrow(() -> new IllegalStateException("Skill not found: " + name));
+    }
 }
