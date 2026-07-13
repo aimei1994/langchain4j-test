@@ -1,5 +1,7 @@
 package com.test.config;
 
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import dev.langchain4j.model.chat.Capability;
 import dev.langchain4j.model.chat.ChatModel;
 import dev.langchain4j.model.chat.request.ChatRequest;
@@ -20,6 +22,7 @@ import java.util.Set;
 public class StructuredOutputChatModel implements ChatModel {
 
     private static final Logger log = LoggerFactory.getLogger(StructuredOutputChatModel.class);
+    private static final ObjectMapper MAPPER = new ObjectMapper();
 
     private final ApiKeyProvider keyProvider;
     private final AgentProperties properties;
@@ -34,15 +37,44 @@ public class StructuredOutputChatModel implements ChatModel {
     @Override
     public ChatResponse chat(ChatRequest request) {
         try {
-            return getDelegate().chat(request);
+            ChatResponse response = getDelegate().chat(request);
+            failFastOnUpstreamError(response);
+            return response;
 
         } catch (Exception e) {
             if (is401(e)) {
                 log.warn("401 Unauthorized detected — refreshing key and retrying once");
                 rebuildDelegate();
-                return delegate.chat(request);
+                ChatResponse retried = delegate.chat(request);
+                failFastOnUpstreamError(retried);
+                return retried;
             }
             throw e;
+        }
+    }
+
+    // Some OpenAI-compatible gateways (e.g. OpenRouter) surface an upstream failure with
+    // HTTP 200 and the error JSON stuffed into the assistant message content itself
+    // (e.g. {"error":{"type":"llm_call_failed","message":"Operation not allowed"}}) instead
+    // of a real HTTP error. Left alone, this gets fed straight into structured-output JSON
+    // parsing and fails with a confusing "Unrecognized field \"error\"" instead of the
+    // actual reason. Detect it here and fail with the real upstream message.
+    private void failFastOnUpstreamError(ChatResponse response) {
+        if (response.aiMessage() == null || response.aiMessage().text() == null) {
+            return;
+        }
+        String text = response.aiMessage().text().trim();
+        if (!text.startsWith("{\"error\"") && !text.startsWith("{ \"error\"")) {
+            return;
+        }
+        try {
+            JsonNode error = MAPPER.readTree(text).get("error");
+            if (error != null) {
+                String message = error.path("message").asText(error.toString());
+                throw new IllegalStateException("Upstream model call failed: " + message);
+            }
+        } catch (com.fasterxml.jackson.core.JsonProcessingException ignored) {
+            // Not actually a JSON error envelope — let normal structured-output parsing handle it.
         }
     }
 

@@ -2,4 +2,10 @@ package com.test.agentic.dto;
 
 import java.util.List;
 
-public record ReviewCodeModel(List<ReviewFinding> findings) {}
+public record ReviewCodeModel(
+        List<ReviewFinding> findings,
+        int inputTokenCount,
+        int outputTokenCount,
+        int toolExecutionCount,
+        List<String> toolExecutions
+) {}

@@ -1,5 +1,5 @@
 ---
-name: code-review
+name: code-review-2
 description: |
   Reviews code for rule violations and outputs structured JSON findings.
   Supports any language. Rules loaded dynamically from reference/rule.md.

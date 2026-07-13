@@ -1,10 +1,9 @@
 ---
 name: code-review_2
 description: |
-  Reviews code for empty/log-only else blocks and empty/swallowed catch blocks,
-  outputting structured JSON findings. Supports any language.
-  Rules loaded dynamically from reference/rule.md.
-  Use when: reviewing code, auditing error handling, code audit.
+  Reviews code for rule violations and outputs structured JSON findings.
+  Supports any language. Rules loaded dynamically from reference/rule.md.
+  Use when: reviewing code, auditing code quality, code review, code audit.
 allowed-tools:
   - Read
   - Grep
@@ -60,7 +59,6 @@ Input code lines use the format `N: <source>` — digit(s), colon, single space,
 ```
 
 Rules:
-- `startLine` / `endLine` → the integer `N` values only
 - `existingCode` → copy lines verbatim including the `N: ` prefix and all whitespace
 - `suggestedCode` → same `N: ` prefix format as `existingCode`. Write the fixed source lines, each prefixed with its line number exactly as `N: <fixed source line>`. Preserve original indentation after the prefix. Do NOT strip or omit the `N: ` prefix.
 
@@ -69,6 +67,20 @@ Rules:
 ## Step 5 — Output
 
 Return **ONLY** the structured findings — no prose, no markdown fences, no text outside the JSON.
+
+```json
+{
+  "findings": [
+    {
+      "ruleName": "<ruleName from reference/rule.md>",
+      "severity": "<severity from reference/rule.md>",
+      "existingCode": "<exact violating lines from input, preserving N: prefix and all whitespace/tabs>",
+      "suggestedCode": "<fixed lines with N: prefix preserved, same format as existingCode>",
+      "suggestedDescription": "<one sentence: what is wrong and the fix, referencing the specific method/block>"
+    }
+  ]
+}
+```
 
 ### Field contracts
 
@@ -101,13 +113,15 @@ Return **ONLY** the structured findings — no prose, no markdown fences, no tex
 
 **Output (findings):**
 ```json
-[
-  {
-    "ruleName": "empty catch block",
-    "severity": "medium",
-    "existingCode": "5:         } catch (Exception e) {\n6:         }",
-    "suggestedCode": "5:         } catch (Exception e) {\n6:             log.error(\"Failed to save key: \" + key, e);\n7:             throw new RuntimeException(e);\n8:         }",
-    "suggestedDescription": "catch block for db.put swallows the exception with no logging or rethrow, hiding save failures."
-  }
-]
+{
+  "findings": [
+    {
+      "ruleName": "empty catch block",
+      "severity": "medium",
+      "existingCode": "5:         } catch (Exception e) {\n6:         }",
+      "suggestedCode": "5:         } catch (Exception e) {\n6:             log.error(\"Failed to save key: \" + key, e);\n7:             throw new RuntimeException(e);\n8:         }",
+      "suggestedDescription": "catch block for db.put swallows the exception with no logging or rethrow, hiding save failures."
+    }
+  ]
+}
 ```

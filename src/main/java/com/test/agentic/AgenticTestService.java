@@ -1,12 +1,14 @@
 package com.test.agentic;
 
-import com.test.agentic.dto.CodeReviewResult;
+import com.test.agentic.dto.CodeReviewResults;
 import com.test.agentic.dto.ReviewCodeModel;
 import com.test.agentic.dto.ReviewFinding;
 import com.test.config.StructuredOutputChatModel;
 import dev.langchain4j.agentic.AgenticServices;
 import dev.langchain4j.agentic.scope.AgenticScope;
+import dev.langchain4j.model.output.TokenUsage;
 import dev.langchain4j.service.Result;
+import dev.langchain4j.service.tool.ToolExecution;
 import dev.langchain4j.skills.ClassPathSkillLoader;
 import dev.langchain4j.skills.Skill;
 import dev.langchain4j.skills.SkillResource;
@@ -38,7 +40,7 @@ public class AgenticTestService {
     private List<Skill> loadedSkills;
 
     public AgenticTestService(StructuredOutputChatModel structuredOutputChatModel,
-                        @Value("${agent.skills.classpath}") String skillsClasspath) {
+                              @Value("${agent.skills.classpath}") String skillsClasspath) {
         this.structuredOutputChatModel = structuredOutputChatModel;
         this.skillsClasspath = skillsClasspath;
     }
@@ -72,7 +74,7 @@ public class AgenticTestService {
     // (AgenticServices.parallelBuilder) fans the same (language, code) input out to every
     // subAgent in parallel, and the supervisor's .output(...) function merges their structured
     // findings back into one ReviewCodeModel, attributing each finding to its source skill.
-    public Result<ReviewCodeModel> reviewWithSkills(List<String> skillNames, String code) {
+    public ReviewCodeModel reviewWithSkills(List<String> skillNames, String code) {
         validateSkillNames(skillNames);
 
         List<CodeReviewSubAgent> subAgents = skillNames.stream()
@@ -85,24 +87,36 @@ public class AgenticTestService {
                 .output(scope -> mergeFindings(scope, skillNames))
                 .build();
 
-        return supervisor.review("java", code);
+        ReviewCodeModel aa = supervisor.review("java", code);
+        return aa;
     }
 
-    private Result<ReviewCodeModel> mergeFindings(AgenticScope scope, List<String> skillNames) {
+    private ReviewCodeModel mergeFindings(AgenticScope scope, List<String> skillNames) {
         List<ReviewFinding> merged = new ArrayList<>();
+        TokenUsage totalTokenUsage = null;
+        List<ToolExecution> allToolExecutions = new ArrayList<>();
         for (String skillName : skillNames) {
             @SuppressWarnings("unchecked")
-            Result<List<CodeReviewResult>> subResult =
-                    (Result<List<CodeReviewResult>>) scope.readState(outputKeyFor(skillName));
-            if (subResult == null || subResult.content() == null) {
+            Result<CodeReviewResults> subResult =
+                    (Result<CodeReviewResults>) scope.readState(outputKeyFor(skillName));
+            if (subResult == null || subResult.content() == null || subResult.content().findings() == null) {
                 continue;
             }
             // Attribution is stamped here rather than trusted from the model's own output.
-            subResult.content().forEach(r -> merged.add(new ReviewFinding(
+            subResult.content().findings().forEach(r -> merged.add(new ReviewFinding(
                     skillName, r.ruleName(), r.severity(),
                     r.existingCode(), r.suggestedCode(), r.suggestedDescription())));
+            totalTokenUsage = TokenUsage.sum(totalTokenUsage, subResult.tokenUsage());
+            allToolExecutions.addAll(subResult.toolExecutions());
         }
-        return Result.<ReviewCodeModel>builder().content(new ReviewCodeModel(merged)).build();
+        int inputTokenCount = totalTokenUsage != null && totalTokenUsage.inputTokenCount() != null
+                ? totalTokenUsage.inputTokenCount() : 0;
+        int outputTokenCount = totalTokenUsage != null && totalTokenUsage.outputTokenCount() != null
+                ? totalTokenUsage.outputTokenCount() : 0;
+        List<String> toolNames = allToolExecutions.stream()
+                .map(te -> te.request().name())
+                .toList();
+        return new ReviewCodeModel(merged, inputTokenCount, outputTokenCount, allToolExecutions.size(), toolNames);
     }
 
     private CodeReviewSubAgent generateSubAgent(String skillName) {
